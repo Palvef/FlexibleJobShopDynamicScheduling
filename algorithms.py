@@ -32,37 +32,31 @@ def prepareJobs(machinesList, itinerariesList):
     return jobsList
 
 
-def algorithmSPT(aJobsList, machinesList):
+def algorithmMOPSO(aJobsList, machinesList):
     """
-    SPT/SJF heuristic algorithm for job shop problem
+    Modified Shortest Processing Time (MOPSO) algorithm for job shop scheduling problem.
     """
-    # 记录某一时间各机器前的任务等待队列，相当于时间进度条，模拟时间流逝，推进排队
     time = {} 
-    waitingOperations = {}
-    # 当前机器时间，可以用来更新time
-    currentTimeOnMachines = {}  
     jobsListToExport = []
+    waitingOperations = {}
+    currentTimeOnMachines = {}
 
-    # initialize machines times and get
+    # Initialize machines times and get
     # first waiting operations for each machine
-    # global machinesList, itinerariesList
-
-    
     for machine in machinesList:
         currentTimeOnMachines[machine.name] = 0
-    #初始化各机器当前等待队列
+    
     for machine in machinesList:
         waitingOperations[machine.name] = []
         for job in aJobsList:
             if job.idOperation == 1 and machine.name in job.machine:
-                #找出当前任务可选机器中机器时间最小的机器
                 if len(job.machine) == 1:
                     waitingOperations[machine.name].append(job)
                 else:
                     minTimeMachine = machine.name
                     for mac in job.machine:
                         if currentTimeOnMachines[mac] <  currentTimeOnMachines[minTimeMachine]:
-                            minTimeMachine = mac.name
+                            minTimeMachine = mac
                     if minTimeMachine == machine.name:
                         waitingOperations[machine.name].append(job)
 
@@ -70,57 +64,60 @@ def algorithmSPT(aJobsList, machinesList):
 
     time[0] = waitingOperations
 
-    for keyMach, operations in waitingOperations.items():
-        # for each waiting task in front of machine set time to 0, update
-        # properties
-        if len(operations):
-            operations[0].startTime = 0
-            operations[0].completed = True
-            operations[0].assignedMachine = keyMach
-
-            # push task to production, and create new event to stop at,
-            # on ending time, then update machines time
-            jobsListToExport.append(operations[0])
-            currentTimeOnMachines[keyMach] = operations[0].getEndTime()
-            time[currentTimeOnMachines[keyMach]] = {}
-
     while len(jobsListToExport) != len(aJobsList):
-        for t, operations in time.items():
-            operations = getWaitingOperationsSPT(aJobsList, float(t), machinesList, currentTimeOnMachines)
-
-            for keyMach, tasks in operations.items():
-                if len(tasks):
-                    if float(t) < currentTimeOnMachines[keyMach]:
-                        continue
-
-                    tasks[0].startTime = float(t)
-                    tasks[0].completed = True
-                    tasks[0].assignedMachine = keyMach
-
-                    jobsListToExport.append(tasks[0])
-
-                    currentTimeOnMachines[keyMach] = tasks[0].getEndTime()
-                    time[currentTimeOnMachines[keyMach]] = {}
-
-            del time[t]
+        # Check if time dictionary is empty
+        if not time:
             break
 
-        time = SortedDict(time)  # chronological order
+        # Get the next time step
+        t = min(time.keys())
+        operations = time[t]
+
+        for keyMach, tasks in operations.items():
+            if len(tasks):
+                if t < currentTimeOnMachines[keyMach]:
+                    continue
+
+                tasks[0].startTime = t
+                tasks[0].completed = True
+                tasks[0].assignedMachine = keyMach
+
+                jobsListToExport.append(tasks[0])
+
+                currentTimeOnMachines[keyMach] = tasks[0].getEndTime()
+                time[currentTimeOnMachines[keyMach]] = getWaitingOperationsMOPSO(aJobsList, machinesList, currentTimeOnMachines)
+
+        del time[t]
+
+        print("Jobs exported:", len(jobsListToExport))  # Print length of exported jobs list
+
+    # Check if all jobs are completed
+    if len(jobsListToExport) != len(aJobsList):
+        print("Algorithm did not finish correctly!")
+    else:
+        print("Algorithm finished successfully!")
+
+    # Check if all jobs from input list are in the exported list
+    if all(job in jobsListToExport for job in aJobsList):
+        print("All jobs from input list are exported.")
+    else:
+        print("Not all jobs from input list are exported.")
 
     return jobsListToExport
 
-
-def getWaitingOperationsSPT(aJobsList, time, machinesList, currentTimeOnMachines):
-    """Get waiting jobs at current time in shortest duration order"""
+def getWaitingOperationsMOPSO(aJobsList, machinesList, currentTimeOnMachines):
+    """Get waiting jobs at current time based on MOPSO"""
 
     incomingOperations = {}
 
-    # global machinesList
     for mach in machinesList:
         assignedJobsForMachine = []
+        # Dictionary to track current job on each machine
+        currentJobs = {machine.name: None for machine in machinesList}
+
         for job in aJobsList:
             if job.completed == False and mach.name in job.machine:
-                if len(job.machine) ==1:
+                if len(job.machine) == 1:
                     assignedJobsForMachine.append(job)
                 else:
                     minTimeMachine = mach.name
@@ -132,18 +129,23 @@ def getWaitingOperationsSPT(aJobsList, time, machinesList, currentTimeOnMachines
         incomingOperations[mach.name] = []
 
         for j in assignedJobsForMachine:
-            if j.idOperation == 1:
-                incomingOperations[mach.name].append(j)
-            else:
-                previousTask = [job for job in aJobsList if
-                                job.itinerary == j.itinerary and job.idOperation == j.idOperation - 1 and job.endTime <= time]
-                if len(previousTask):
-                    if previousTask[0].completed:
-                        incomingOperations[mach.name].append(j)
-        # sort added jobs by duration
+            # Check if any other job on the machine is from the same itinerary
+            if not any(job.assignedMachine == m.name for m in machinesList if m.name != mach.name and job.itinerary == currentJobs[m.name]):
+                if j.idOperation == 1:
+                    incomingOperations[mach.name].append(j)
+                else:
+                    previousTask = [job for job in aJobsList if
+                                    job.itinerary == j.itinerary and job.idOperation == j.idOperation - 1 and job.endTime <= currentTimeOnMachines[mach.name]]
+                    if len(previousTask):
+                        if previousTask[0].completed:
+                            incomingOperations[mach.name].append(j)
         incomingOperations[mach.name].sort(key=lambda j: j.duration)
-    return incomingOperations
+        
+        # Debugging prints
+        print("Machine:", mach.name)
+        print("Incoming operations:", incomingOperations[mach.name])
 
+    return incomingOperations
 
 def color_distance(c1,c2):
     return sum([abs(x[0] - x[1]) for x in zip(c1,c2)])

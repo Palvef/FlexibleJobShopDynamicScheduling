@@ -4,7 +4,7 @@ from clJob import Job
 from clItinerary import  Itinerary
 from clMachine import Machine
 
-def rescheduleInsertJobsSPT(jobsListExportPrevious, rescheduleTime, insertJobsList, machinesList):
+def rescheduleInsertJobsMOPSO(jobsListExportPrevious, rescheduleTime, insertJobsList, machinesList):
     """
     插入紧急订单重调度
     :param jobsListExportPrevious: 任务初始调度结果
@@ -20,6 +20,7 @@ def rescheduleInsertJobsSPT(jobsListExportPrevious, rescheduleTime, insertJobsLi
     currentTimeOnMachines = {}
     jobsListToExportNew = []
     unchangedOperations = {}
+
     # 遍历机器，生成每个机器前工序集合和需要重调度的工序集合
     for machine in machinesList:
         allPreviousOperations[machine.name] = [job for job in jobsListExportPrevious if
@@ -29,11 +30,17 @@ def rescheduleInsertJobsSPT(jobsListExportPrevious, rescheduleTime, insertJobsLi
                                               job.assignedMachine == machine.name and job.startTime >= rescheduleTime]
         rescheduleOperations[machine.name].sort(key=lambda j: j.startTime)
 
-        #重调度时刻机器时间更新
+        # 计算未更改的操作长度
         unchangedLength = len(allPreviousOperations[machine.name]) - len(rescheduleOperations[machine.name])
+
+        # 获取未更改的操作
         unchangedOperations[machine.name] = allPreviousOperations[machine.name][0:unchangedLength]
-        currentTimeOnMachines[machine.name] = unchangedOperations[machine.name][-1].endTime
-        if currentTimeOnMachines[machine.name] < rescheduleTime:
+
+        # 检查未更改操作列表是否为空
+        if unchangedOperations[machine.name]:
+            currentTimeOnMachines[machine.name] = unchangedOperations[machine.name][-1].endTime
+        else:
+            # 如果列表为空，则设置当前时间为重调度时间
             currentTimeOnMachines[machine.name] = rescheduleTime
 
         # 初始化各机器时间
@@ -50,18 +57,23 @@ def rescheduleInsertJobsSPT(jobsListExportPrevious, rescheduleTime, insertJobsLi
             jobsListToExportNew.append(job)
 
     for machine in machinesList:
-        #生成重调度列表
+        # 生成重调度列表
         for job in rescheduleOperations[machine.name]:
             rescheduleJobsList.append(job)
+
+    # 将插入的任务列表加入重调度列表，并更新优先级
     for job in insertJobsList:
         job.priority = 5
     rescheduleJobsList.extend(insertJobsList)
+
+    # 重调度后的所有任务列表
     allJobsList = jobsListToExportNew + rescheduleJobsList
+
     # 调度时间初始化
     time = SortedDict(time)
     while len(jobsListToExportNew) < len(jobsListExportPrevious) + len(insertJobsList):
         for t, operations in time.items():
-            operations = GetWaitingOperationsSPT(allJobsList, float(t), machinesList,  currentTimeOnMachines)
+            operations = GetWaitingOperationsMOPSO(allJobsList, float(t), machinesList,  currentTimeOnMachines)
 
             for keyMach, tasks in operations.items():
                 if len(tasks):
@@ -78,7 +90,56 @@ def rescheduleInsertJobsSPT(jobsListExportPrevious, rescheduleTime, insertJobsLi
             del time[t]
             break
         time = SortedDict(time)  # chronological order
+
+    # 返回重调度后的任务列表
     return jobsListToExportNew
+
+def GetWaitingOperationsMOPSO(aJobsList, nowTime, machinesList, currentTimeOnMachines, faultyMachine=""):
+    """Get waiting jobs at current time in MOPSO order"""
+
+    incomingOperations = {}
+
+    for mach in machinesList:
+        assignedJobsForMachine = []
+
+        for job in aJobsList:
+            if job.completed == False and mach.name in job.machine:
+                if len(job.machine) == 1:
+                    assignedJobsForMachine.append(job)
+                else:
+                    minTimeMachine = mach.name
+                    for mac in job.machine:
+                        if mac == faultyMachine:
+                            continue
+                        elif currentTimeOnMachines[mac] < currentTimeOnMachines[minTimeMachine]:
+                            minTimeMachine = mac
+                    if minTimeMachine == mach.name:
+                        assignedJobsForMachine.append(job)
+
+        incomingOperations[mach.name] = []
+
+        for j in assignedJobsForMachine:
+            if j.idOperation == 1:
+                incomingOperations[mach.name].append(j)
+            else:
+                previousTask = [job for job in aJobsList if
+                                job.itinerary == j.itinerary and job.idOperation == j.idOperation - 1 and job.endTime <= nowTime]
+                if len(previousTask):
+                    if previousTask[0].completed:
+                        incomingOperations[mach.name].append(j)
+
+        # Sort added jobs by priority and duration
+        incomingOperations[mach.name].sort(key=lambda j: (j.priority, j.duration))
+
+        # Insert urgent orders at the beginning of the queue
+        for job in incomingOperations[mach.name]:
+            if job.priority > 0:
+                temp = job
+                incomingOperations[mach.name].remove(job)
+                incomingOperations[mach.name].insert(0, temp)
+                break
+
+    return incomingOperations
 
 def recheduleChangePriority(jobsListExportPrevious, rescheduleTime,priorItinerary, machinesList):
     """
@@ -136,7 +197,7 @@ def recheduleChangePriority(jobsListExportPrevious, rescheduleTime,priorItinerar
     time = SortedDict(time)
     while len(jobsListToExportNew) < len(jobsListExportPrevious):
         for t, operations in time.items():
-            operations = GetWaitingOperationsSPT(allJobsList, float(t), machinesList, currentTimeOnMachines)
+            operations = GetWaitingOperationsMOPSO(allJobsList, float(t), machinesList, currentTimeOnMachines)
 
             for keyMach, tasks in operations.items():
                 if len(tasks):
@@ -237,7 +298,7 @@ def recheduleMachineFault(jobsListExportPrevious, rescheduleTime,faultyMachine, 
     time = SortedDict(time)
     while len(jobsListToExportNew) < len(allJobsList):
         for t, operations in time.items():
-            operations = GetWaitingOperationsSPT(allJobsList, float(t), machinesAvailableList, currentTimeOnMachines, faultyMachine)
+            operations = GetWaitingOperationsMOPSO(allJobsList, float(t), machinesAvailableList, currentTimeOnMachines, faultyMachine)
 
             for keyMach, tasks in operations.items():
                 if len(tasks):
@@ -255,48 +316,3 @@ def recheduleMachineFault(jobsListExportPrevious, rescheduleTime,faultyMachine, 
             break
         time = SortedDict(time)  # chronological order
     return jobsListToExportNew
-
-
-
-def GetWaitingOperationsSPT(aJobsList, nowTime, machinesList,  currentTimeOnMachines, faultyMachine=""):
-    """Get waiting jobs at current time in shortest duration order"""
-
-    incomingOperations = {}
-    # global machinesList
-    for mach in machinesList:
-        assignedJobsForMachine = []
-        for job in aJobsList:
-            if job.completed == False and mach.name in job.machine:
-                if len(job.machine) ==1:
-                    assignedJobsForMachine.append(job)
-                else:
-                    minTimeMachine = mach.name
-                    for mac in job.machine:
-                        if mac == faultyMachine:
-                            continue
-                        elif currentTimeOnMachines[mac] <  currentTimeOnMachines[minTimeMachine]:
-                            minTimeMachine = mac
-                    if minTimeMachine == mach.name:
-                        assignedJobsForMachine.append(job)
-
-        incomingOperations[mach.name] = []
-
-        for j in assignedJobsForMachine:
-            if j.idOperation == 1:
-                incomingOperations[mach.name].append(j)
-            else:
-                previousTask = [job for job in aJobsList if
-                                job.itinerary == j.itinerary and job.idOperation == j.idOperation - 1 and job.endTime <= nowTime]
-                if len(previousTask):
-                    if previousTask[0].completed:
-                        incomingOperations[mach.name].append(j)
-        # sort added jobs by duration
-        incomingOperations[mach.name].sort(key=lambda j: j.duration)
-        # 将该时刻等待队列中的紧急订单插入队首
-        for job in incomingOperations[mach.name]:
-            if job.priority > 0:
-                temp = job
-                incomingOperations[mach.name].remove(job)
-                incomingOperations[mach.name].insert(0, temp)
-                break
-    return incomingOperations
